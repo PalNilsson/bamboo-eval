@@ -1,0 +1,75 @@
+{
+  "description": "Numbers produced by the pre-move harness, scripts/eval_tool_retrieval.py in bamboo-mcp, keyed by catalogue fingerprint. Phase 0's acceptance criterion is that bamboo-eval reproduces them exactly on the same catalogue. A fingerprint absent from this file skips the parity test with instructions rather than failing it, because a different catalogue is a different measurement and has nothing to be compared against.",
+  "how_to_add_a_fingerprint": [
+    "In a bamboo-mcp checkout at the commit under test, run:",
+    "  python scripts/eval_tool_retrieval.py --retriever null    --k 10 --json",
+    "  python scripts/eval_tool_retrieval.py --retriever lexical --k 6 --k 8 --k 10 --k 12 --k 14 --json",
+    "Copy catalog_fingerprint, and each report's recall_at_k, recall_at_k_hard,",
+    "guidance_coverage, payload_fraction, over_budget_cases and full_payload_chars",
+    "into a new block below, verbatim. Do not round and do not re-derive them from",
+    "bamboo-eval: the point of the block is that it was produced by the other harness."
+  ],
+  "fingerprints": {
+    "7e3891f672ac": {
+      "source": "bamboo-mcp scripts/eval_tool_retrieval.py, container checkout of the v1.1.0 snapshot, 2026-10-07",
+      "cases": 120,
+      "full_payload_chars": 29842,
+      "reports": [
+        {
+          "retriever": "null",
+          "k": 10,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 1.0,
+          "payload_fraction": 1.0,
+          "over_budget_cases": 120
+        },
+        {
+          "retriever": "lexical",
+          "k": 6,
+          "recall_at_k": 0.9083,
+          "recall_at_k_hard": 0.9153,
+          "guidance_coverage": 0.8725,
+          "payload_fraction": 0.2441,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 8,
+          "recall_at_k": 0.9667,
+          "recall_at_k_hard": 0.9492,
+          "guidance_coverage": 0.9412,
+          "payload_fraction": 0.3213,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 10,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 0.9804,
+          "payload_fraction": 0.4097,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 12,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 0.9902,
+          "payload_fraction": 0.4841,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 14,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 0.9902,
+          "payload_fraction": 0.549,
+          "over_budget_cases": 0
+        }
+      ]
+    }
+  }
+}
