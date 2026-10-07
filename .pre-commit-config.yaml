@@ -1,0 +1,37 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+# Run 'pre-commit run --all-files' manually if hooks are added or changed
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v3.2.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: check-added-large-files
+    -   id: end-of-file-fixer
+-   repo: https://github.com/PyCQA/flake8
+    rev: 6.1.0
+    hooks:
+    -   id: flake8
+-   repo: local
+    hooks:
+      - id: circular-imports
+        name: Check for circular imports (changed files)
+        entry: circular-import-precommit
+        language: python
+        additional_dependencies:
+          - circular-import-detector==1.0.18
+        pass_filenames: true
+        types_or: [python]
+        stages: [pre-commit]
+
+      - id: pyright
+        name: pyright (type check)
+        entry: pyright
+        language: node
+        additional_dependencies:
+          - pyright@1.1.408
+        # pyright reads pyrightconfig.json and checks the whole project.
+        # pass_filenames must be false — per-file mode misses cross-file errors.
+        pass_filenames: false
+        types_or: [python]
+        stages: [pre-commit]
