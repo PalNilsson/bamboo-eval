@@ -157,3 +157,28 @@ class TestParityWithThePreMoveHarness:
             "bamboo-eval does not reproduce the pre-move harness on this "
             "catalogue:\n  " + "\n  ".join(mismatches)
         )
+
+
+class TestTheReferenceFileItself:
+    """A weak block must announce itself as one."""
+
+    def test_a_block_without_the_lexical_sweep_says_so(
+        self, reference: dict[str, Any]
+    ) -> None:
+        """The null baseline reproduces by construction — recall is 1.0 however
+        the retriever behaves — so a block holding only that one checks the
+        payload denominator and little else.  It may be recorded, because a
+        catalogue's denominator is worth pinning on its own, but it must carry
+        a note saying what is missing.  Otherwise a green parity test reads as
+        a reproduction when nothing about the retriever was reproduced.
+        """
+        incomplete = [
+            fingerprint
+            for fingerprint, block in reference["fingerprints"].items()
+            if not any(r["retriever"] != "null" for r in block["reports"])
+            and not block.get("note")
+        ]
+        assert not incomplete, (
+            f"these blocks record only the null baseline and do not say so: "
+            f"{incomplete}"
+        )

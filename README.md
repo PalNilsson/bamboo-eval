@@ -87,11 +87,16 @@ narrowed run must not be worse than (decision E-26). `BAMBOO_FAST_PATH` is
 deliberately neither set nor recorded: the planner never reads it, and calling
 `bamboo_plan_tool` already bypasses the fast path.
 
-`--model` is applied through `LLM_DEFAULT_MODEL`, and the variable's name is
-stored in the row's `config` so a run cannot hide which lever it pulled. Change
-it with `--model-env` if the deployment selects models some other way; omit
-`--model` entirely to measure whatever the deployment selects, which is
-recorded as such rather than guessed at.
+`--model` is applied through `LLM_DEFAULT_MODEL`, the *default* profile's
+model, which is the profile the planner resolves through —
+`scripts/probe_llm.py` in bamboo-mcp prints the resolved profiles and is how to
+confirm it. Anything that lever does not cover goes through `--set-env
+NAME=VALUE`: the provider variable when the model is on another provider
+(`claude-haiku-4-5` as the commercial reference point), `BAMBOO_TOOL_RETRIEVAL=0`
+for the baseline, `BAMBOO_MODEL_PRICES` so `cost_guard` prices the CERN models
+rather than only counting their tokens. Every variable applied is recorded in
+the row's `config`; omit `--model` to measure whatever the deployment selects,
+which is recorded as such rather than guessed at.
 
 Every call is appended to `results/ledger/selection_accuracy-<fingerprint>.jsonl`
 as it returns, which is what `--resume` reads. **Add `results/ledger/` to

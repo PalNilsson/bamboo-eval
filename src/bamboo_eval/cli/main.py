@@ -205,7 +205,8 @@ def _format_selection_report(report: sa.Report, show_failures: int) -> str:
         f"  selection accuracy  {report.accuracy():.3f}"
         + (f"  ± {stddev:.3f}" if stddev is not None else "")
         + (f"  unanimity {unanimity:.3f}" if unanimity is not None else ""),
-        f"  accuracy (hard)     {report.accuracy(True):.3f}",
+        "  accuracy (hard)     "
+        + (f"{report.accuracy(True):.3f}" if report.cases_in(True) else "— (no hard cases)"),
         f"  over-proposal       {report.over_proposal():.3f}  (precision over proposed)",
         "  confidence          "
         + ("—" if confidence is None else f"{confidence:.3f}"),
@@ -263,6 +264,34 @@ def _selection_corpus(args: argparse.Namespace) -> tuple[Corpus[ToolSelectionCas
     return corpus, path
 
 
+def _env_overrides(args: argparse.Namespace, model: str) -> dict[str, str]:
+    """Return the environment a run applies before measuring.
+
+    Bamboo resolves its LLM profiles from the environment, so this *is* the
+    selection of what gets measured, and it is recorded in the row rather than
+    left to whatever the shell happened to carry.
+
+    Args:
+        args: Parsed arguments.
+        model: Model identifier, empty for the deployment's own selection.
+
+    Returns:
+        Dict[str, str]: Variables to set.
+
+    Raises:
+        BambooEvalError: If a ``--set-env`` argument is not ``NAME=VALUE``.
+            Silently ignoring it would leave a run reporting a configuration it
+            did not have.
+    """
+    overrides = {args.model_env: model} if model else {}
+    for item in args.set_env or []:
+        name, separator, value = item.partition("=")
+        if not separator or not name:
+            raise BambooEvalError(f"--set-env expects NAME=VALUE, got {item!r}")
+        overrides[name] = value
+    return overrides
+
+
 def _run_one_model(
     args: argparse.Namespace,
     model: str,
@@ -301,7 +330,7 @@ def _run_one_model(
             plugin_id=args.plugin_id,
         )
 
-    with production.model_selected(model, args.model_env):
+    with production.env_overrides(_env_overrides(args, model)):
         return sa.evaluate(
             planner,
             corpus,
@@ -330,6 +359,7 @@ def _cmd_selection_accuracy(args: argparse.Namespace) -> int:
     """
     started = time.monotonic()
     context = RunContext.capture(__version__)
+    _env_overrides(args, "")  # validated here: a usage error must precede a skip
     corpus, corpus_path = _selection_corpus(args)
 
     try:
@@ -357,6 +387,8 @@ def _cmd_selection_accuracy(args: argparse.Namespace) -> int:
 
     records = []
     for model in args.model or [""]:
+        applied = _env_overrides(args, model)
+        print(f"applying:  {applied or 'nothing; the deployment selects'}")
         try:
             report = _run_one_model(args, model, corpus, names, fingerprint)
         except MetricSkipped as exc:
@@ -378,7 +410,7 @@ def _cmd_selection_accuracy(args: argparse.Namespace) -> int:
                 context,
                 fingerprint,
                 guidance,
-                config,
+                {**config, "env_overrides": applied},
                 time.monotonic() - started,
             )
         )
@@ -538,6 +570,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Evaluations per case (default: 5, floor of 3 for a usable stddev).",
+    )
+    selection.add_argument(
+        "--set-env",
+        action="append",
+        metavar="NAME=VALUE",
+        help="Set an environment variable for the run, repeatable. Recorded in "
+        "the row. Use it for anything --model does not cover — a provider "
+        "switch, BAMBOO_TOOL_RETRIEVAL=0 for the baseline, BAMBOO_MODEL_PRICES.",
     )
     selection.add_argument("--temperature", type=float, default=0.0)
     selection.add_argument("--namespace", default="atlas")

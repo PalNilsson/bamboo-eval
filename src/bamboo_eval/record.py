@@ -35,21 +35,25 @@ from typing import Any, Literal, Mapping
 #: 2 — adds ``n_declined`` and ``n_unknown_tool`` (decision E-28).
 SCHEMA_VERSION = 2
 
-#: Schema versions whose rows may be compared with each other.
+#: What the row *means*, as distinct from what shape it has.
 #:
-#: The default rule is equality: a row written under a different schema is a
-#: different measurement until someone says otherwise.  This set is that
-#: someone, and it is correct only while every version in it differs from the
-#: others by *added fields with defaults* — a reader of a version-1 row gets
-#: the same answer to the same question from a version-2 row, because the
-#: fields version 2 adds are counters version 1 never populated and no
-#: existing field changed meaning.
+#: Two questions hide behind one number when a schema version carries both:
+#: "has the row gained a field?" and "has the measurement changed?"  Only the
+#: second decides whether two rows may be plotted on one axis, and the two
+#: change at different rates — phase 1 added two counters, which no earlier row
+#: populated and which changed nothing about what recall or accuracy mean.
 #:
-#: Re-typing a field, changing what one counts, or removing one means the new
-#: version starts a set of its own.  Widening this set to preserve a series is
-#: how two incomparable numbers end up on the same axis, so it is a decision
-#: with a comment, not a default.
-COMPARABLE_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
+#: So comparability travels in its own field, stored on every row, and
+#: :func:`bamboo_eval.store.comparable` compares that rather than the schema
+#: version.  A row written before this field existed reads back as 1, which is
+#: correct: schema 1 and schema 2 measure the same things the same way.
+#:
+#: Raise this — and say why in the CHANGELOG — when a stored field is re-typed,
+#: when a counter starts counting something else, or when a metric's scoring
+#: changes.  Rows on either side of the bump then refuse to compare, which is
+#: the whole point: the alternative is two incomparable numbers on one axis,
+#: and nothing in the row to show it.
+COMPARABILITY_VERSION = 1
 
 Status = Literal["ok", "skipped", "failed"]
 
@@ -201,6 +205,8 @@ class EvalRecord:  # pylint: disable=too-many-instance-attributes
         git_commit: See :class:`RunContext`.
         host: See :class:`RunContext`.
         framework_version: See :class:`RunContext`.
+        comparability_version: See :data:`COMPARABILITY_VERSION`.  Rows that
+            disagree on it are never compared, whatever else they share.
         status: ``ok``, ``skipped`` or ``failed``.
         skip_reason: Required when ``status`` is not ``ok``.
         duration_s: Wall-clock seconds.
@@ -238,6 +244,7 @@ class EvalRecord:  # pylint: disable=too-many-instance-attributes
     skip_reason: str = ""
     duration_s: float = 0.0
     schema_version: int = field(default=SCHEMA_VERSION)
+    comparability_version: int = field(default=COMPARABILITY_VERSION)
 
     def __post_init__(self) -> None:
         """Reject records that would be unreadable later.

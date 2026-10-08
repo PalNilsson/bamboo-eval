@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-from .record import COMPARABLE_SCHEMA_VERSIONS, EvalRecord
+from .record import EvalRecord
 
 #: Where results live when no path is given.  Inside the repository, because
 #: the history is meant to be reviewed in a diff alongside the change that
@@ -118,11 +118,10 @@ def comparable(records: Sequence[EvalRecord], against: EvalRecord) -> Iterator[E
         records: Candidate rows, typically a metric's whole history.
         against: The row being explained.
 
-    Schema versions are checked against
-    :data:`~bamboo_eval.record.COMPARABLE_SCHEMA_VERSIONS` rather than for
-    equality, so that a purely additive schema change does not silently retire
-    the history it did not invalidate.  Anything outside that set is not
-    compared.
+    What is checked is ``comparability_version``, not ``schema_version``: a row
+    gaining a field is not a measurement changing, and conflating the two would
+    retire a history that is still valid every time the schema grows.  See
+    :data:`~bamboo_eval.record.COMPARABILITY_VERSION`.
 
     Yields:
         EvalRecord: Rows measured under the same conditions, in input order,
@@ -139,8 +138,7 @@ def comparable(records: Sequence[EvalRecord], against: EvalRecord) -> Iterator[E
             and record.config == against.config
             and record.planner_model == against.planner_model
             and record.judge_model == against.judge_model
-            and {record.schema_version, against.schema_version}
-            <= COMPARABLE_SCHEMA_VERSIONS
+            and record.comparability_version == against.comparability_version
         )
         if same:
             yield record

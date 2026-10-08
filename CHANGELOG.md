@@ -34,15 +34,23 @@ semantic versioning.
   and driven by `asyncio.run`, with a check that `call` is still a coroutine
   function. `parse_plan()` rejects what is not a plan as its own error type, so
   `unparseable` stays distinct from a transport failure.
-- `production.retrieval_settings()` and `production.model_selected()`:
+- `production.env_overrides()`, `retrieval_settings()` and `model_selected()`:
   `BAMBOO_TOOL_RETRIEVAL` and its tuning variables are recorded;
   `BAMBOO_FAST_PATH` is neither set nor recorded, because the planner never
   reads it (E-26, superseding the phrasing of E-24).
 - CLI `bamboo-eval selection-accuracy` with `--model` (repeatable),
-  `--model-env`, `--repeats`, `--limit`, `--max-calls`, `--max-seconds`,
-  `--max-consecutive-errors`, `--resume`, `--record`. No threshold option:
-  LLM-dependent metrics gate nothing (E-11).
-- 73 new tests (143 in total), all offline. A stub planner drives every
+  `--model-env`, `--set-env NAME=VALUE` (repeatable), `--repeats`, `--limit`,
+  `--max-calls`, `--max-seconds`, `--max-consecutive-errors`, `--resume`,
+  `--record`. No threshold option: LLM-dependent metrics gate nothing (E-11).
+  Every variable the run applies is recorded in the row's `config`, because the
+  baseline and the narrowed run differ only in the environment and a row that
+  does not carry it cannot tell them apart.
+- A slice with no cases emits no row. Hard-slice accuracy over an empty subset
+  is 1.0 by construction, which answers "did it fail on a confusable case"
+  correctly and stores something indistinguishable from a perfect score until
+  someone reads `n_cases`. A `--limit` run that excludes every hard case now
+  emits no hard row at all, and the report prints "— (no hard cases)".
+- 82 new tests (152 in total), all offline. A stub planner drives every
   outcome, the whole resolution table, resume, both budget guards and the
   consecutive-error guard; a stand-in module exercises the planner wrapper on a
   bare checkout.
@@ -54,10 +62,15 @@ semantic versioning.
 - `record.py`: `failed_record()` beside `skipped_record()`. A skip says the
   measurement could not be attempted; a failure says it was attempted and
   abandoned, and only the second needs a reason naming a limit.
-- `store.comparable()` now checks `COMPARABLE_SCHEMA_VERSIONS` rather than
-  equality, so the schema bump does not silently retire the phase 0 retrieval
-  history it did not invalidate. Valid only while versions differ by added
-  fields with defaults; the constant says so.
+- Comparability is now its own stored field, `comparability_version`, and
+  `store.comparable()` checks that rather than `schema_version`. Two questions
+  were hiding behind one number: whether the row gained a field, and whether
+  the measurement changed. Only the second decides whether two rows belong on
+  one axis, and the two change at different rates — phase 1 added counters that
+  changed nothing about what recall means. Rows written before the field
+  existed read back as 1, which is correct. Raise `COMPARABILITY_VERSION` when
+  a field is re-typed, a counter starts counting something else, or a metric's
+  scoring changes.
 - `pyproject.toml`: pylint `max-args` raised to 10 for `evaluate()`, whose
   parameters after the first three are keyword-only.
 
@@ -96,6 +109,15 @@ semantic versioning.
   `tests/data/reference_numbers.json`. Verified passing on catalogue
   `7e3891f672ac` (22 tools, 29,842 chars).
 - 70 tests; the 59 that need no Bamboo install pass on a bare checkout.
+
+### Added
+
+- `tests/data/reference_numbers.json`: a block for catalogue `8f67488c6d95`
+  (aipanda033, 30,065 chars, 120 cases) — **partial**, holding the null
+  baseline only, and carrying a note that says so. A new test fails any block
+  that records only the null baseline without that note, since null recall is
+  1.000 by construction and a green parity test on it would read as a
+  reproduction when nothing about the retriever was reproduced.
 
 ### Changed
 

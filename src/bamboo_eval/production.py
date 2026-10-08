@@ -337,12 +337,23 @@ def retriever(name: str) -> Any:
         raise
 
 
-#: Environment variable the planner's model is selected through.  Named here
-#: rather than inside a metric because it is a fact about Bamboo's
+#: Environment variable the planner's model is selected through.
+#:
+#: The planner resolves through the *default* profile — ``route`` takes the
+#: fast profile and ``log_analysis``/``rag_answer`` the reasoning one, so the
+#: default profile is the planner's.  ``scripts/probe_llm.py`` in bamboo-mcp
+#: prints the resolved profiles, which is how this was established rather than
+#: assumed.
+#:
+#: Named here rather than inside a metric because it is a fact about Bamboo's
 #: configuration, and because a run that pulled a lever nobody checked is a run
-#: that measured the default model while reporting another one — every call
-#: that uses it records the variable's name in the stored configuration so the
-#: lever is visible in the row rather than only in this comment.
+#: that measured the default model while reporting another one.  Every run
+#: records the variables it set, so the lever is visible in the row rather than
+#: only in this comment.
+#:
+#: Switching to a model on another provider — ``claude-haiku-4-5`` as the
+#: commercial reference point of decision E-4 — needs the provider variable
+#: too, which is what :func:`env_overrides` is for.
 MODEL_ENV_VAR = "LLM_DEFAULT_MODEL"
 
 #: Environment variables that change what the planner is shown, and therefore
@@ -371,6 +382,36 @@ def retrieval_settings() -> dict[str, str | None]:
 
 
 @contextlib.contextmanager
+def env_overrides(overrides: Mapping[str, str]) -> Iterator[dict[str, str]]:
+    """Apply environment overrides for the duration of the block.
+
+    Bamboo resolves its LLM profiles from the environment, so this is how a
+    measurement selects what it measures.  Restored afterwards, including the
+    difference between "was set to something else" and "was not set": leaving
+    a process configured differently is how the second run of a session
+    measures something the first one chose.
+
+    Args:
+        overrides: Variables to set.
+
+    Yields:
+        Dict[str, str]: What was applied, for the record.  The values are
+        model and provider identifiers, never credentials — the gateway's key
+        is not something a run sets or stores.
+    """
+    previous = {name: os.environ.get(name) for name in overrides}
+    os.environ.update(overrides)
+    try:
+        yield dict(overrides)
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+@contextlib.contextmanager
 def model_selected(model: str, env_var: str = MODEL_ENV_VAR) -> Iterator[str]:
     """Select the planner's model for the duration of the block.
 
@@ -387,15 +428,8 @@ def model_selected(model: str, env_var: str = MODEL_ENV_VAR) -> Iterator[str]:
     if not model:
         yield ""
         return
-    previous = os.environ.get(env_var)
-    os.environ[env_var] = model
-    try:
+    with env_overrides({env_var: model}):
         yield env_var
-    finally:
-        if previous is None:
-            os.environ.pop(env_var, None)
-        else:
-            os.environ[env_var] = previous
 
 
 def _first_text_block(blocks: Any) -> str:

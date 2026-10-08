@@ -16,6 +16,7 @@ import pytest
 
 from bamboo_eval import store
 from bamboo_eval.record import (
+    COMPARABILITY_VERSION,
     SCHEMA_VERSION,
     EvalRecord,
     RunContext,
@@ -173,3 +174,34 @@ class TestStore:
         row = _record()
         store.append([row], tmp_path)
         assert "first run" in store.describe_change(row, tmp_path)
+
+
+class TestComparabilityVersion:
+    """A row gaining a field is not a measurement changing."""
+
+    def test_a_pre_existing_row_still_compares(self, tmp_path: Path) -> None:
+        """Schema 1 rows carry no comparability version and read back as 1.
+
+        Phase 1 added two counters no earlier row populated and changed nothing
+        about what recall means, so retiring the phase 0 series over it would
+        have thrown away history that is still valid.
+        """
+        old = _record(schema_version=1)
+        stored = old.to_dict()
+        del stored["comparability_version"]
+        store.append([EvalRecord.from_dict(stored)], tmp_path)
+        line = store.describe_change(_record(run_id="run-2", value=0.95), tmp_path)
+        assert "down from" in line
+
+    def test_a_changed_measurement_refuses_to_compare(self, tmp_path: Path) -> None:
+        """Which is the point: the alternative is two incomparable numbers on
+        one axis, with nothing in the row to show it."""
+        store.append([_record(comparability_version=1)], tmp_path)
+        line = store.describe_change(
+            _record(run_id="run-2", comparability_version=2), tmp_path
+        )
+        assert "no comparable earlier run" in line
+
+    def test_the_version_travels_with_every_row(self) -> None:
+        """A row that does not carry it cannot be refused later."""
+        assert _record().to_dict()["comparability_version"] == COMPARABILITY_VERSION
