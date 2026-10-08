@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Sequence
 
 from .. import __version__
-from ..corpus import ToolSelectionCase, bundled_corpus_path, load_corpus
-from ..errors import BambooEvalError, MetricSkipped, ProductionContractError
+from ..budget import DEFAULT_MAX_CALLS, DEFAULT_MAX_SECONDS, Budget
+from ..corpus import Corpus, ToolSelectionCase, bundled_corpus_path, load_corpus
+from ..errors import BambooEvalError, BudgetExceeded, MetricSkipped, ProductionContractError
+from ..metrics import selection_accuracy as sa
 from ..metrics import tool_retrieval as tr
-from ..record import RunContext, skipped_record
-from .. import production, store
+from ..record import RunContext, failed_record, skipped_record
+from .. import ledger, production, store
 
 #: Tools exempt from retrieval because the universal fallback route has no
 #: graceful degradation without them.  Mirrors decision T-4 in bamboo-mcp: a
@@ -181,6 +183,217 @@ def _cmd_tool_retrieval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_selection_report(report: sa.Report, show_failures: int) -> str:
+    """Render a selection-accuracy report as plain text.
+
+    Args:
+        report: The report to render.
+        show_failures: Maximum failing observations to list; 0 lists none.
+
+    Returns:
+        str: The rendered report.
+    """
+    counts = report.counts()
+    resolution = report.resolution_counts()
+    unanimity = report.unanimity()
+    stddev = report.stddev()
+    confidence = report.mean_confidence()
+    lines = [
+        f"model={report.model or '<deployment default>'}  repeats={report.repeats}  "
+        f"cases={report.n_cases}  observations={len(report.observations)}"
+        + (f"  ({report.resumed} resumed)" if report.resumed else ""),
+        f"  selection accuracy  {report.accuracy():.3f}"
+        + (f"  ± {stddev:.3f}" if stddev is not None else "")
+        + (f"  unanimity {unanimity:.3f}" if unanimity is not None else ""),
+        f"  accuracy (hard)     {report.accuracy(True):.3f}",
+        f"  over-proposal       {report.over_proposal():.3f}  (precision over proposed)",
+        "  confidence          "
+        + ("—" if confidence is None else f"{confidence:.3f}"),
+        "  outcomes            "
+        + "  ".join(f"{name}={counts[name]}" for name in sa.OUTCOMES),
+        "  names resolved      "
+        + "  ".join(f"{how}={resolution[how]}" for how in ("exact", "suffix", "ambiguous", "unknown")),
+    ]
+    if report.expected_outside_catalogue:
+        lines.append(
+            f"  WARNING: {len(report.expected_outside_catalogue)} expected tools are "
+            f"absent from this catalogue and can never be proposed: "
+            f"{list(report.expected_outside_catalogue)}"
+        )
+    failures = report.failures()
+    if failures and show_failures:
+        lines.append(f"  failures ({len(failures)}):")
+        for observation in failures[:show_failures]:
+            flag = " [hard]" if observation.case.hard else ""
+            lines.append(
+                f"    {observation.case.case_id}{flag} r{observation.repeat} "
+                f"{observation.outcome}: expected="
+                f"{sorted(observation.case.expected_tools)} proposed="
+                f"{list(observation.proposed)}"
+            )
+        if len(failures) > show_failures:
+            lines.append(f"    ... and {len(failures) - show_failures} more")
+    return "\n".join(lines)
+
+
+def _selection_corpus(args: argparse.Namespace) -> tuple[Corpus[ToolSelectionCase], Path]:
+    """Load the corpus a selection run measures, honouring ``--limit``.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        Tuple[Corpus[ToolSelectionCase], Path]: The corpus and where it came
+        from.  A limited corpus keeps its name, version and digest — it is the
+        same labels — and the limit is recorded in the configuration, so the
+        store refuses to compare a five-case smoke run with a full one.
+    """
+    path = args.corpus or bundled_corpus_path("tool_selection_corpus")
+    corpus = load_corpus(path, ToolSelectionCase)
+    if args.limit:
+        corpus = Corpus(
+            cases=corpus.cases[: args.limit],
+            name=corpus.name,
+            version=corpus.version,
+            sha256=corpus.sha256,
+            coverage_exempt=corpus.coverage_exempt,
+            description=corpus.description,
+            path=corpus.path,
+        )
+    return corpus, path
+
+
+def _run_one_model(
+    args: argparse.Namespace,
+    model: str,
+    corpus: Corpus[ToolSelectionCase],
+    names: Sequence[str],
+    fingerprint: str,
+) -> sa.Report:
+    """Measure one model, appending every call to the ledger as it returns.
+
+    Args:
+        args: Parsed arguments.
+        model: Model identifier, empty for the deployment's own selection.
+        corpus: The labelled questions.
+        names: Catalogue names, for resolution.
+        fingerprint: Abbreviated catalogue fingerprint, which names the ledger.
+
+    Returns:
+        sa.Report: The model's observations and aggregates.
+    """
+    ledger_file = ledger.ledger_path(sa.METRIC_NAME, fingerprint, args.results_dir)
+    budget = Budget(max_calls=args.max_calls, max_seconds=args.max_seconds)
+
+    def planner(question: str) -> dict[str, object]:
+        """Ask the production planner.
+
+        Args:
+            question: The corpus question.
+
+        Returns:
+            Dict[str, object]: The parsed plan.
+        """
+        return production.plan(
+            question,
+            namespaces=[args.namespace],
+            temperature=args.temperature,
+            plugin_id=args.plugin_id,
+        )
+
+    with production.model_selected(model, args.model_env):
+        return sa.evaluate(
+            planner,
+            corpus,
+            names,
+            model=model,
+            repeats=args.repeats,
+            ledger_file=ledger_file,
+            budget=budget,
+            resume=args.resume,
+            retry_outcomes=frozenset({"error"}) if args.resume else frozenset(),
+            max_consecutive_errors=args.max_consecutive_errors,
+        )
+
+
+def _cmd_selection_accuracy(args: argparse.Namespace) -> int:
+    """Run the end-task selection-accuracy metric (phase 1).
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        int: 0 on a completed measurement or a stated skip, 1 when a declared
+        limit stopped the run.  No threshold option: everything LLM-dependent
+        gates nothing (decision E-11), so this command reports and records, and
+        a regression is caught by comparing rows rather than by a red build.
+    """
+    started = time.monotonic()
+    context = RunContext.capture(__version__)
+    corpus, corpus_path = _selection_corpus(args)
+
+    try:
+        catalogue = production.collect_catalogue(args.namespace)
+    except MetricSkipped as exc:
+        return _record_skip(args, context, sa.METRIC_NAME, corpus.name, exc.reason)
+    names = [str(entry["name"]) for entry in catalogue]
+    fingerprint = production.catalogue_fingerprint(catalogue)[:12]
+    guidance = production.guidance_fingerprint(production.routing_rules(args.plugin_id))
+    config = {
+        "namespace": args.namespace,
+        "plugin_id": args.plugin_id,
+        "temperature": args.temperature,
+        "limit": args.limit or 0,
+        "model_env": args.model_env,
+        "env": production.retrieval_settings(),
+    }
+
+    print(f"catalogue: {len(catalogue)} tools, fingerprint={fingerprint}")
+    print(f"corpus:    {len(corpus.cases)} cases, {corpus.name} v{corpus.version}")
+    print(f"           sha256={corpus.sha256[:12]} from {corpus_path}")
+    print(f"ledger:    {ledger.ledger_path(sa.METRIC_NAME, fingerprint, args.results_dir)}")
+    print(f"retrieval: {production.retrieval_settings()}")
+    print()
+
+    records = []
+    for model in args.model or [""]:
+        try:
+            report = _run_one_model(args, model, corpus, names, fingerprint)
+        except MetricSkipped as exc:
+            return _record_skip(args, context, sa.METRIC_NAME, corpus.name, exc.reason)
+        except BudgetExceeded as exc:
+            print(f"stopped: {exc.reason}", file=sys.stderr)
+            if args.record:
+                store.append(
+                    [failed_record(context, sa.METRIC_NAME, exc.reason, corpus.name)],
+                    args.results_dir,
+                )
+            return 1
+        print(_format_selection_report(report, args.show_failures))
+        print()
+        records.extend(
+            sa.report_to_records(
+                report,
+                corpus,
+                context,
+                fingerprint,
+                guidance,
+                config,
+                time.monotonic() - started,
+            )
+        )
+
+    if args.json:
+        print(json.dumps({"records": [r.to_dict() for r in records]}, indent=2))
+    if args.record:
+        written = store.append(records, args.results_dir)
+        for record in records:
+            print(store.describe_change(record, args.results_dir), file=sys.stderr)
+        for path in written:
+            print(f"recorded in {path}", file=sys.stderr)
+    return 0
+
+
 def _cmd_check_contract(args: argparse.Namespace) -> int:  # pylint: disable=unused-argument
     """Resolve every declared production entry point.
 
@@ -300,6 +513,75 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Exit non-zero if recall@k falls below this at any k.",
     )
     retrieval.set_defaults(func=_cmd_tool_retrieval)
+
+    selection = subparsers.add_parser(
+        "selection-accuracy",
+        parents=[store_args],
+        help="Measure whether the planner proposes the tools a case needs.",
+    )
+    selection.add_argument("--corpus", type=Path, default=None)
+    selection.add_argument(
+        "--model",
+        action="append",
+        help="Model identifier, repeatable. Omit to measure whatever the "
+        "deployment selects, which is recorded as such.",
+    )
+    selection.add_argument(
+        "--model-env",
+        default=production.MODEL_ENV_VAR,
+        help=f"Environment variable --model is applied through "
+        f"(default: {production.MODEL_ENV_VAR}). Recorded in the row, so a run "
+        f"cannot hide which lever it pulled.",
+    )
+    selection.add_argument(
+        "--repeats",
+        type=int,
+        default=5,
+        help="Evaluations per case (default: 5, floor of 3 for a usable stddev).",
+    )
+    selection.add_argument("--temperature", type=float, default=0.0)
+    selection.add_argument("--namespace", default="atlas")
+    selection.add_argument("--plugin-id", default="atlas")
+    selection.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Measure only the first N cases, for a smoke run. Recorded in the "
+        "configuration, so a limited run is never compared with a full one.",
+    )
+    selection.add_argument(
+        "--max-calls",
+        type=int,
+        default=DEFAULT_MAX_CALLS,
+        help=f"Stop after this many calls (default: {DEFAULT_MAX_CALLS}).",
+    )
+    selection.add_argument(
+        "--max-seconds",
+        type=float,
+        default=DEFAULT_MAX_SECONDS,
+        help=f"Stop after this many seconds (default: {DEFAULT_MAX_SECONDS:.0f}).",
+    )
+    selection.add_argument(
+        "--max-consecutive-errors",
+        type=int,
+        default=5,
+        help="Stop after this many failed calls in a row (default: 5), rather "
+        "than aggregating zeros for a gateway that is down.",
+    )
+    selection.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse calls already in the ledger for this catalogue, remaking "
+        "only the ones that errored.",
+    )
+    selection.add_argument("--show-failures", type=int, default=10)
+    selection.add_argument("--json", action="store_true", help="Emit the stored rows as JSON.")
+    selection.add_argument(
+        "--record",
+        action="store_true",
+        help="Append the rows to the result store and report the change.",
+    )
+    selection.set_defaults(func=_cmd_selection_accuracy)
 
     contract = subparsers.add_parser(
         "check-contract",

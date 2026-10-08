@@ -86,7 +86,11 @@ disable = ["duplicate-code"]
 # max-attributes: CaseResult and EvalRecord are records. A record has fields.
 # min-public-methods: retriever stubs implement a one-method Protocol, and
 #   test classes are namespaces for related assertions.
-max-args = 8
+# evaluate() in metrics/selection_accuracy.py takes ten: the planner, the
+#   corpus, the catalogue, and seven named knobs that each change what the run
+#   measures or what it costs. All but the first three are keyword-only, so the
+#   call site reads as a list of settings rather than a row of bare values.
+max-args = 10
 max-positional-arguments = 8
 max-locals = 25
 max-attributes = 12

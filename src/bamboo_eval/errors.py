@@ -52,3 +52,53 @@ class CorpusError(BambooEvalError, ValueError):
     Also a :class:`ValueError`, because that is what the harness raised before
     the move and callers that caught it should keep working.
     """
+
+
+class PlanParseError(BambooEvalError):
+    """A planner returned something that is not a usable plan.
+
+    Separated from a transport failure because the two have different causes
+    and different fixes: a timeout says nothing about the model's competence,
+    while an unparseable plan is a defect in the model or the prompt.  The
+    metric that catches this records the observation as ``unparseable`` rather
+    than as ``error``.
+
+    Attributes:
+        payload: What was returned, truncated by the caller if large.  Kept so
+            that a stored ledger row can show what the planner actually said.
+    """
+
+    def __init__(self, message: str, payload: str = "") -> None:
+        """Initialise the error.
+
+        Args:
+            message: Why the payload could not be read as a plan.
+            payload: The offending text, for the ledger.
+        """
+        super().__init__(message)
+        self.payload = payload
+
+
+class BudgetExceeded(BambooEvalError):
+    """A run hit a declared limit and stopped.
+
+    Calls, wall clock, or consecutive failures: three limits, one response.
+
+    Deliberately not a skip and not a result.  Decision E-30: a run that spent
+    its budget has measured part of a corpus, and a partial measurement
+    presented as a measurement is the failure this framework exists to
+    prevent.  The run stops, records ``status="failed"`` with the limit named,
+    and leaves the ledger resumable.
+
+    Attributes:
+        reason: Which limit was reached and what it was set to.
+    """
+
+    def __init__(self, reason: str) -> None:
+        """Initialise the error.
+
+        Args:
+            reason: Which limit was reached.
+        """
+        super().__init__(reason)
+        self.reason = reason

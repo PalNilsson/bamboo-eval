@@ -8,6 +8,6 @@ metric cannot quietly reach into Bamboo for something undeclared.
 """
 from __future__ import annotations
 
-from . import tool_retrieval
+from . import selection_accuracy, tool_retrieval
 
-__all__ = ["tool_retrieval"]
+__all__ = ["selection_accuracy", "tool_retrieval"]

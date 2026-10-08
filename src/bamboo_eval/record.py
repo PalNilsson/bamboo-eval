@@ -31,7 +31,25 @@ from typing import Any, Literal, Mapping
 #: Bumped whenever a field is added, removed or re-typed.  A reader that does
 #: not recognise a schema version must refuse to compare across it rather than
 #: guess, so the version travels with every row.
-SCHEMA_VERSION = 1
+#:
+#: 2 — adds ``n_declined`` and ``n_unknown_tool`` (decision E-28).
+SCHEMA_VERSION = 2
+
+#: Schema versions whose rows may be compared with each other.
+#:
+#: The default rule is equality: a row written under a different schema is a
+#: different measurement until someone says otherwise.  This set is that
+#: someone, and it is correct only while every version in it differs from the
+#: others by *added fields with defaults* — a reader of a version-1 row gets
+#: the same answer to the same question from a version-2 row, because the
+#: fields version 2 adds are counters version 1 never populated and no
+#: existing field changed meaning.
+#:
+#: Re-typing a field, changing what one counts, or removing one means the new
+#: version starts a set of its own.  Widening this set to preserve a series is
+#: how two incomparable numbers end up on the same axis, so it is a decision
+#: with a comment, not a default.
+COMPARABLE_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 
 Status = Literal["ok", "skipped", "failed"]
 
@@ -151,7 +169,20 @@ class EvalRecord:  # pylint: disable=too-many-instance-attributes
             emitting something unparseable are different defects with different
             fixes, and pooling them hides both.
         n_error: Transport, timeout and other infrastructure failures.
-        repeats: Evaluations per case; 1 for a deterministic metric.
+        n_declined: Results that were valid and proposed nothing — a planner
+            that returned a well-formed plan with no tool calls declined to
+            answer, which is neither a wrong choice nor a malformed one.
+            Counted apart because pooling it with either misattributes the
+            failure (decision E-28).
+        n_unknown_tool: Results naming a tool that is not in the catalogue.
+            Inventing a tool and choosing the wrong real one are different
+            defects: the first is a prompt or model-grounding problem, the
+            second a discrimination problem.
+        repeats: Evaluations per case; 1 for a deterministic metric.  The
+            counters above count *observations*, so with ``repeats`` above 1
+            they sum to ``n_cases * repeats`` rather than to ``n_cases``, and
+            ``value`` is the mean over observations rather than
+            ``n_pass / n_cases``.
         stddev: Standard deviation of the per-repeat values, or ``None`` when
             deterministic.
         unanimity: Fraction of cases where every repeat agreed, or ``None``
@@ -195,6 +226,8 @@ class EvalRecord:  # pylint: disable=too-many-instance-attributes
     n_skipped: int = 0
     n_unparseable: int = 0
     n_error: int = 0
+    n_declined: int = 0
+    n_unknown_tool: int = 0
     repeats: int = 1
     stddev: float | None = None
     unanimity: float | None = None
@@ -250,6 +283,46 @@ class EvalRecord:  # pylint: disable=too-many-instance-attributes
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
+def _non_measurement_record(
+    context: RunContext,
+    metric: str,
+    reason: str,
+    status: Status,
+    corpus_name: str = "",
+    slice_name: str = "all",
+) -> EvalRecord:
+    """Build a record that stands in for a measurement that did not happen.
+
+    Args:
+        context: The invocation's shared facts.
+        metric: Which metric did not produce a number.
+        reason: Why.
+        status: ``"skipped"`` or ``"failed"``.
+        corpus_name: The corpus it would have used, where known.
+        slice_name: The slice it would have reported.
+
+    Returns:
+        EvalRecord: A record with no value and a stated reason.
+    """
+    return EvalRecord(
+        run_id=context.run_id,
+        timestamp=context.timestamp,
+        metric=metric,
+        slice=slice_name,
+        value=None,
+        n_cases=0,
+        corpus_name=corpus_name,
+        corpus_version=0,
+        corpus_sha256="",
+        catalogue_fingerprint="",
+        git_commit=context.git_commit,
+        host=context.host,
+        framework_version=context.framework_version,
+        status=status,
+        skip_reason=reason,
+    )
+
+
 def skipped_record(
     context: RunContext,
     metric: str,
@@ -273,20 +346,36 @@ def skipped_record(
     Returns:
         EvalRecord: A record with ``status="skipped"`` and no value.
     """
-    return EvalRecord(
-        run_id=context.run_id,
-        timestamp=context.timestamp,
-        metric=metric,
-        slice=slice_name,
-        value=None,
-        n_cases=0,
-        corpus_name=corpus_name,
-        corpus_version=0,
-        corpus_sha256="",
-        catalogue_fingerprint="",
-        git_commit=context.git_commit,
-        host=context.host,
-        framework_version=context.framework_version,
-        status="skipped",
-        skip_reason=reason,
+    return _non_measurement_record(
+        context, metric, reason, "skipped", corpus_name, slice_name
+    )
+
+
+def failed_record(
+    context: RunContext,
+    metric: str,
+    reason: str,
+    corpus_name: str = "",
+    slice_name: str = "all",
+) -> EvalRecord:
+    """Build the record a metric writes when a run stopped part-way.
+
+    A skip says the measurement could not be attempted; a failure says it was
+    attempted and abandoned.  Decision E-30 keeps them apart because a run that
+    spent its budget, or whose planner errored on every call, has partial data
+    — and the one thing that must not happen is for that partial data to be
+    aggregated and stored as though it were the corpus.
+
+    Args:
+        context: The invocation's shared facts.
+        metric: Which metric was abandoned.
+        reason: What stopped it, naming the limit or the error.
+        corpus_name: The corpus it was measuring.
+        slice_name: The slice it would have reported.
+
+    Returns:
+        EvalRecord: A record with ``status="failed"`` and no value.
+    """
+    return _non_measurement_record(
+        context, metric, reason, "failed", corpus_name, slice_name
     )

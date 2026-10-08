@@ -23,13 +23,18 @@ backend is absent.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import importlib
 import importlib.util  # noqa: F401 - `import importlib` alone does not bind .util
+import inspect
+import json
+import os
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
-from .errors import MetricSkipped, ProductionContractError
+from .errors import BambooEvalError, MetricSkipped, PlanParseError, ProductionContractError
 from .metrics.tool_retrieval import NullRetriever
 
 #: Distribution that must be installed for anything here to resolve.  Named in
@@ -99,6 +104,13 @@ ENTRY_POINTS: tuple[EntryPoint, ...] = (
         "bamboo.tools.tool_retrieval",
         "LexicalRetriever",
         "the shipped BM25 retriever under test",
+    ),
+    EntryPoint(
+        "bamboo.tools.planner",
+        "bamboo_plan_tool",
+        "is the planner the server itself calls; the selection-accuracy metric "
+        "measures what this returns rather than a reconstruction of the "
+        "planning path (decision E-25)",
     ),
     EntryPoint(
         "bamboo.tools._tool_retrieval_embedding",
@@ -323,3 +335,210 @@ def retriever(name: str) -> Any:
         if type(exc).__name__ == "EncoderUnavailable":
             raise MetricSkipped(f"{name} retriever needs an embedding model: {exc}") from exc
         raise
+
+
+#: Environment variable the planner's model is selected through.  Named here
+#: rather than inside a metric because it is a fact about Bamboo's
+#: configuration, and because a run that pulled a lever nobody checked is a run
+#: that measured the default model while reporting another one — every call
+#: that uses it records the variable's name in the stored configuration so the
+#: lever is visible in the row rather than only in this comment.
+MODEL_ENV_VAR = "LLM_DEFAULT_MODEL"
+
+#: Environment variables that change what the planner is shown, and therefore
+#: what a selection measurement means (decision E-26).  ``BAMBOO_FAST_PATH`` is
+#: deliberately absent: the planner never reads it, and recording a variable
+#: that had no effect would misdescribe the run.
+RETRIEVAL_ENV_VARS: tuple[str, ...] = (
+    "BAMBOO_TOOL_RETRIEVAL",
+    "BAMBOO_TOOL_RETRIEVAL_K",
+    "BAMBOO_TOOL_RETRIEVAL_RRF_K",
+    "BAMBOO_TOOL_RETRIEVAL_MIN_CATALOG",
+    "BAMBOO_TOOL_RETRIEVAL_LOG",
+)
+
+
+def retrieval_settings() -> dict[str, str | None]:
+    """Return the retrieval environment as it stands for this process.
+
+    Returns:
+        Dict[str, Optional[str]]: Each variable in :data:`RETRIEVAL_ENV_VARS`
+        with its value, or ``None`` where it is unset.  Unset is recorded
+        rather than omitted, because "the default was in force" and "nobody
+        looked" are different runs.
+    """
+    return {name: os.environ.get(name) for name in RETRIEVAL_ENV_VARS}
+
+
+@contextlib.contextmanager
+def model_selected(model: str, env_var: str = MODEL_ENV_VAR) -> Iterator[str]:
+    """Select the planner's model for the duration of the block.
+
+    Args:
+        model: Model identifier, or empty to leave the deployment's own
+            selection alone — which is itself a measurable configuration and is
+            recorded as such rather than silently substituted.
+        env_var: Variable to set; see :data:`MODEL_ENV_VAR`.
+
+    Yields:
+        str: The variable that was set, or ``""`` when nothing was changed, so
+        a caller can record which lever it pulled.
+    """
+    if not model:
+        yield ""
+        return
+    previous = os.environ.get(env_var)
+    os.environ[env_var] = model
+    try:
+        yield env_var
+    finally:
+        if previous is None:
+            os.environ.pop(env_var, None)
+        else:
+            os.environ[env_var] = previous
+
+
+def _first_text_block(blocks: Any) -> str:
+    """Return the text of the first content block a tool returned.
+
+    Args:
+        blocks: Whatever the tool's ``call`` returned — a sequence of MCP
+            content objects, which may be attribute-style or mapping-style
+            depending on the SDK version in use.
+
+    Returns:
+        str: The first block's text.
+
+    Raises:
+        PlanParseError: If there is no block, or the first one carries no text.
+    """
+    if not isinstance(blocks, Sequence) or not blocks:
+        raise PlanParseError(f"planner returned no content ({type(blocks).__name__})")
+    first = blocks[0]
+    text = first.get("text") if isinstance(first, Mapping) else getattr(first, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        raise PlanParseError("planner returned a content block with no text")
+    return text
+
+
+def _strip_code_fence(text: str) -> str:
+    """Return *text* with a surrounding Markdown code fence removed.
+
+    Args:
+        text: The returned text.
+
+    Returns:
+        str: The text inside the fence, or the text unchanged.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    body = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+    return body.rsplit("```", 1)[0].strip()
+
+
+def parse_plan(text: str) -> dict[str, Any]:
+    """Parse the planner's text block into a plan.
+
+    The planner validates its own output against the ``Plan`` model before
+    returning it, so text arriving here that is not a plan means the tool
+    returned something else — an error payload, or prose where JSON was
+    expected.  That is a distinct defect from choosing the wrong tool, which is
+    why it gets its own exception and its own outcome bucket.
+
+    Args:
+        text: The text block the planner returned.
+
+    Returns:
+        Dict[str, Any]: The plan, as the fields a metric reads: ``route``,
+        ``confidence``, ``tool_calls``.
+
+    Raises:
+        PlanParseError: If the text is not a JSON object carrying a ``route``
+            and a list of ``tool_calls`` whose entries name a tool.
+    """
+    payload = _strip_code_fence(text)
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise PlanParseError(f"planner output is not JSON: {exc}", payload) from exc
+    if not isinstance(parsed, dict):
+        raise PlanParseError(
+            f"planner output is a JSON {type(parsed).__name__}, not a plan object",
+            payload,
+        )
+    if not isinstance(parsed.get("route"), str):
+        raise PlanParseError("plan has no route", payload)
+    calls = parsed.get("tool_calls")
+    if not isinstance(calls, list):
+        raise PlanParseError("plan has no tool_calls list", payload)
+    for call in calls:
+        if not isinstance(call, Mapping) or not isinstance(call.get("tool"), str):
+            raise PlanParseError(f"plan has a tool call without a tool name: {call!r}", payload)
+    return parsed
+
+
+def plan(
+    question: str,
+    namespaces: Sequence[str] = ("atlas",),
+    temperature: float = 0.0,
+    max_tokens: int = 900,
+    plugin_id: str | None = None,
+) -> dict[str, Any]:
+    """Ask the production planner for a plan, without executing it.
+
+    Decision E-25.  This calls ``bamboo_plan_tool.call()`` — the object the MCP
+    server itself dispatches to — rather than the LLM client underneath it, so
+    the catalogue narrowing, the prompt assembly and the schema validation that
+    happen on the way are all part of what is measured.  Reconstructing any of
+    that here would produce a metric for a path that merely resembles
+    production, which is the failure mode the framework exists to rule out.
+
+    ``execute`` is passed explicitly as ``False`` although that is also the
+    default: whether a plan was executed is too important to leave implied.
+
+    Args:
+        question: The corpus question, verbatim.
+        namespaces: Plugin namespaces the planner may draw tools from.
+        temperature: Sampling temperature; 0 where the gateway honours it.
+        max_tokens: Generation limit, the tool's own default.
+        plugin_id: Active plugin, or ``None`` for the server's default.
+
+    Returns:
+        Dict[str, Any]: The parsed plan.
+
+    Raises:
+        ProductionContractError: If the entry point has moved, or no longer has
+            the asynchronous ``call(arguments)`` shape this depends on.
+        MetricSkipped: If Bamboo is not installed.
+        PlanParseError: If what came back is not a plan.
+        BambooEvalError: If called from inside a running event loop, which this
+            wrapper cannot drive a coroutine from.
+    """
+    tool = resolve(_entry("bamboo_plan_tool"))
+    call = getattr(tool, "call", None)
+    if not inspect.iscoroutinefunction(call):
+        raise ProductionContractError(
+            f"{_entry('bamboo_plan_tool').dotted}.call is not a coroutine function "
+            f"(found {type(call).__name__}); bamboo-eval drives it with asyncio.run, "
+            f"so a change of shape here changes what the metric measures"
+        )
+    arguments: dict[str, Any] = {
+        "question": question,
+        "namespaces": list(namespaces),
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "execute": False,
+    }
+    if plugin_id:
+        arguments["plugin_id"] = plugin_id
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise BambooEvalError(
+            "bamboo_eval.production.plan() was called from inside a running event "
+            "loop; drive the planner's coroutine directly in that case"
+        )
+    return parse_plan(_first_text_block(asyncio.run(call(arguments))))

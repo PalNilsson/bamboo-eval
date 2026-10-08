@@ -73,6 +73,34 @@ bamboo-eval history tool_retrieval_recall --slice hard
 bamboo-eval tool-retrieval --retriever lexical --k 10 --min-recall 0.99   # the gate
 ```
 
+```bash
+# phase 1: shown the catalogue, did the planner choose the right tool?
+bamboo-eval selection-accuracy --limit 5 --repeats 1            # smoke run
+bamboo-eval selection-accuracy --model gpt-oss-20b --repeats 5 --record
+bamboo-eval selection-accuracy --model gpt-oss-20b --resume     # after a drop
+bamboo-eval history selection_accuracy --slice hard
+```
+
+The baseline is the same run with `BAMBOO_TOOL_RETRIEVAL=0` — the planner shown
+the whole catalogue, the direct analogue of `NullRetriever`, and the thing a
+narrowed run must not be worse than (decision E-26). `BAMBOO_FAST_PATH` is
+deliberately neither set nor recorded: the planner never reads it, and calling
+`bamboo_plan_tool` already bypasses the fast path.
+
+`--model` is applied through `LLM_DEFAULT_MODEL`, and the variable's name is
+stored in the row's `config` so a run cannot hide which lever it pulled. Change
+it with `--model-env` if the deployment selects models some other way; omit
+`--model` entirely to measure whatever the deployment selects, which is
+recorded as such rather than guessed at.
+
+Every call is appended to `results/ledger/selection_accuracy-<fingerprint>.jsonl`
+as it returns, which is what `--resume` reads. **Add `results/ledger/` to
+`.gitignore`**: the aggregates are committed, the per-call working state is
+not. A run that hits `--max-calls`, `--max-seconds` or five consecutive failed
+calls stops, records `status="failed"` with the limit named, and writes no
+aggregate — a partial measurement presented as a measurement is the failure
+this package exists to prevent (decision E-30).
+
 `--record` appends to `results/<metric>.jsonl` and prints the change against
 the most recent *comparable* row, which is what turns `0.992` into
 `0.992, down from 1.000 on 2026-10-06`.
