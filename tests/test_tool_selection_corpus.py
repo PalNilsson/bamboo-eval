@@ -13,6 +13,11 @@ aggregate still looks healthy.  Both are checked here.
 """
 from __future__ import annotations
 
+# pylint: disable=too-few-public-methods,unused-argument
+# The retriever stubs implement a one-method Protocol, and must accept the
+# full retrieve(question, catalog, k) signature while using only part of it —
+# a stub that read every argument would not be a stub.
+
 import json
 from pathlib import Path
 from typing import Any

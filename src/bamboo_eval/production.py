@@ -23,12 +23,14 @@ backend is absent.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util  # noqa: F401 - `import importlib` alone does not bind .util
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .errors import MetricSkipped, ProductionContractError
+from .metrics.tool_retrieval import NullRetriever
 
 #: Distribution that must be installed for anything here to resolve.  Named in
 #: the error so that a fresh checkout's first failure explains itself.
@@ -277,8 +279,6 @@ def guidance_fingerprint(rules: Sequence[Any]) -> str:
     Returns:
         str: Twelve hex characters, or ``""`` when there is no guidance.
     """
-    import hashlib
-
     if not rules:
         return ""
     digest = hashlib.sha256()
@@ -305,8 +305,6 @@ def retriever(name: str) -> Any:
             encoder resolves on first use rather than at construction, so this
             can also surface later, during evaluation.
     """
-    from .metrics.tool_retrieval import NullRetriever
-
     if name == "null":
         return NullRetriever()
     attribute = {

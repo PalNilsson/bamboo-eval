@@ -42,6 +42,26 @@ semantic versioning.
   `7e3891f672ac` (22 tools, 29,842 chars).
 - 70 tests; the 59 that need no Bamboo install pass on a bare checkout.
 
+### Changed
+
+- `EvalRecord.from_dict` uses `dataclasses.fields()` rather than the private
+  `__dataclass_fields__`, which is the public API and which type checkers can
+  actually see.
+- `production.py` imports `hashlib` and `NullRetriever` at module level. Both
+  were function-level imports with no cycle to justify them; verified acyclic.
+- `cli/main.py` grew `_record_skip`, replacing two copies of the
+  report-and-store-a-skip block.
+- Four tests in `test_record_store.py` no longer take an unused `tmp_path`.
+
 ### Notes
 
 - `results/` is intended to be committed. The history is the point.
+- pylint is clean at 10.00/10. Its `R09xx` size thresholds are raised in
+  `pyproject.toml` to fit frozen dataclasses and explicit parameter lists;
+  `duplicate-code` is disabled globally because it is cross-file and cannot be
+  suppressed from inside either file. Everything else is suppressed per file
+  with a written reason, so `unused-argument` and
+  `inconsistent-return-statements` keep working on `src/`.
+- README carries a "Development setup" section covering the node/pyright
+  bootstrap, the pytest-unresolved false errors, the pre-commit interpreter
+  trap and pylint's lack of default targets.

@@ -7,6 +7,10 @@ so the second case type is exercised here rather than only declared.
 """
 from __future__ import annotations
 
+# pylint: disable=too-few-public-methods
+# Test classes group related assertions; they are namespaces, not objects with
+# an interface to satisfy.
+
 import json
 from pathlib import Path
 from typing import Any

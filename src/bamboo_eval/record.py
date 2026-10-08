@@ -23,7 +23,7 @@ import json
 import platform
 import subprocess
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -124,8 +124,12 @@ class RunContext:
 
 
 @dataclass(frozen=True)
-class EvalRecord:
+class EvalRecord:  # pylint: disable=too-many-instance-attributes
     """One measurement of one metric over one slice of one corpus.
+
+    The field count is the schema, not sprawl: every one of them is a
+    fingerprint, a count or a provenance fact that a later reader needs in
+    order to decide whether this row may be compared with another.
 
     A record is written per slice rather than per run, so that ``all`` and
     ``hard`` are separate rows and a query for the hard subset does not have to
@@ -242,7 +246,7 @@ class EvalRecord:
         Returns:
             EvalRecord: The rebuilt record.
         """
-        known = {f for f in cls.__dataclass_fields__}
+        known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in data.items() if k in known})
 
 

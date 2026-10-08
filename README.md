@@ -117,6 +117,76 @@ The loader rejects rather than skips: an unlabelled case would score as a free
 pass against every candidate, and a duplicate identifier makes two results
 indistinguishable in a stored row.
 
+## Development setup
+
+```bash
+pip install -e '.[dev]'                                   # quote in zsh
+pip install -e ../bamboo-mcp/core -e ../bamboo-mcp/packages/askpanda_atlas
+pre-commit install
+```
+
+Four things bite people setting this up, in roughly this order.
+
+**zsh eats square brackets.** `pip install pyright[nodejs]` gives
+`zsh: no matches found`. Quote the whole argument.
+
+**pyright needs node, and will try to download one.** With no `node` on PATH,
+`pyright-python` bootstraps one via `nodeenv` from nodejs.org — which fails
+behind a TLS-inspecting proxy, and on a fresh python.org framework install that
+has no root certificates (pip is unaffected; it carries its own). Either
+install node once (`brew install node`), or `pip install 'pyright[nodejs]'`,
+which takes node from PyPI as a wheel and never touches nodejs.org. The wheel
+route is the one that works on `aipanda033`, where outbound HTTPS to
+nodejs.org is unlikely to be permitted at all.
+
+**pyright without pytest reports four errors that are not errors.**
+`pytest.skip()` is typed `NoReturn`, which is what tells pyright that a fixture
+ending in a skip does not fall off the end. With pytest unresolved it reports
+`must return value on all code paths` in `conftest.py`, an `Any | None` return
+in `test_phase0_parity.py`, and a possibly-unbound `retriever`. All four are
+downstream of the `Import "pytest" could not be resolved` warnings — install
+the `dev` extra and they disappear.
+
+That matters for the pre-commit hook in particular: it runs pyright in its own
+isolated environment and locates Python via `PATH`, so committing from an
+activated virtualenv passes and committing from a shell where it is not active
+fails, with no obvious connection to what changed. Pin the interpreter rather
+than relying on `PATH` — keep the virtualenv inside the repository as `.venv`
+(gitignored) and add to `pyrightconfig.json`:
+
+```json
+"venvPath": ".",
+"venv": ".venv"
+```
+
+An absolute path to a virtualenv elsewhere works on one laptop and breaks in CI
+and on `aipanda033`.
+
+**pylint takes explicit targets.** Unlike flake8 and pydocstyle it does not
+default to the working directory, and bare `pylint` just prints
+`No files to lint: exiting.`
+
+```bash
+pylint src tests
+```
+
+## Quality gate
+
+```bash
+pytest -q
+flake8 src tests
+pydocstyle --convention=google src tests
+pyright
+pylint src tests
+```
+
+All five are expected to be clean, pylint at 10.00/10. Its `R09xx` size
+thresholds are raised in `pyproject.toml` to fit a package of frozen
+dataclasses and explicit parameter lists; the remaining suppressions are
+per-file, with the reason written at the top of each file, so that
+`unused-argument` and `inconsistent-return-statements` keep working on `src/`
+where they catch real defects.
+
 ## Status
 
 Phase 0 complete: the package, the loader, the record, the store, the contract,

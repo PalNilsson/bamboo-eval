@@ -8,6 +8,15 @@ same degradation rule the metrics follow.
 """
 from __future__ import annotations
 
+# Each fixture below either returns a value or skips. ``pytest.skip()`` is
+# typed NoReturn and raises, but a static analyser only knows that if it can
+# resolve pytest — and the pre-commit pyright hook runs in its own isolated
+# environment where it often cannot, which turns every skip branch into
+# "function must return value on all code paths". The bare ``raise`` after each
+# skip is unreachable at runtime and makes the control flow explicit to any
+# analyser, in any environment, which is cheaper than requiring every
+# environment to be configured correctly.
+
 from typing import Any
 
 import pytest
@@ -38,6 +47,7 @@ def catalogue() -> list[dict[str, Any]]:
         return list(production.collect_catalogue("atlas"))
     except (ProductionContractError, MetricSkipped) as exc:
         pytest.skip(f"bamboo-core not importable: {exc}")
+        raise
 
 
 @pytest.fixture(scope="session")
@@ -51,3 +61,4 @@ def routing_rules() -> tuple[Any, ...]:
         return production.routing_rules("atlas")
     except (ProductionContractError, MetricSkipped) as exc:
         pytest.skip(f"bamboo-core not importable: {exc}")
+        raise

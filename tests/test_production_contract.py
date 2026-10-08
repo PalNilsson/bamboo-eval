@@ -11,6 +11,12 @@ reaching for an undeclared symbol is a defect whether or not Bamboo is present.
 """
 from __future__ import annotations
 
+# pylint: disable=protected-access,too-few-public-methods
+# production._entry is private and is tested directly on purpose: it is the
+# guard against a metric reaching into Bamboo for an undeclared symbol, which
+# is the failure this whole module exists to prevent. The local _Rule stub is
+# a two-attribute stand-in, not an object with an interface.
+
 import pytest
 
 from bamboo_eval import production

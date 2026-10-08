@@ -48,3 +48,46 @@ filterwarnings = ["error"]
 
 [tool.pydocstyle]
 convention = "google"
+
+# pylint takes explicit targets; it does not default to the working directory
+# the way flake8 and pydocstyle do. Run it as `pylint src tests`.
+[tool.pylint.format]
+# Matches .flake8, so the two linters cannot disagree about one line.
+max-line-length = 200
+
+[tool.pylint."messages control"]
+# duplicate-code is cross-file and cannot be suppressed from inside either
+# file, so it is disabled here rather than in the sources. It fires on the
+# EvalRecord(...) construction shared by record.py and metrics/tool_retrieval.py:
+# both are explicit field mappings, and hiding them behind a helper would
+# conceal which fields a metric actually sets, which is the one thing a reader
+# of a stored row needs to know.
+disable = ["duplicate-code"]
+
+# Everything else pylint objects to is pytest idiom, and is disabled per file
+# in the test modules that provoke it rather than globally — so that
+# inconsistent-return-statements and unused-argument keep working on src/,
+# where they catch real defects.
+
+[tool.pylint.design]
+# pylint's R09xx defaults are tuned for object-oriented application code. This
+# package is frozen dataclasses and functions with explicit, named parameters,
+# so the defaults fire on shapes that are deliberate. Raised to fit the code
+# rather than reshaping the code to fit the linter — but raised, not disabled,
+# so a function that genuinely sprawls still gets caught.
+#
+# max-args / max-positional-arguments: evaluate() and report_to_records() take
+#   their inputs as named parameters. Collapsing them into a config object
+#   would hide which inputs a measurement actually depends on, which is the one
+#   thing a reader of a stored row needs to see.
+# max-locals: evaluate()'s scoring loop names its intermediates. Splitting it
+#   would scatter the arithmetic that is the most important thing in the
+#   package to read correctly.
+# max-attributes: CaseResult and EvalRecord are records. A record has fields.
+# min-public-methods: retriever stubs implement a one-method Protocol, and
+#   test classes are namespaces for related assertions.
+max-args = 8
+max-positional-arguments = 8
+max-locals = 25
+max-attributes = 12
+min-public-methods = 0

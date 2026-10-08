@@ -65,6 +65,37 @@ def _format_report(report: tr.Report, show_failures: int) -> str:
     return "\n".join(lines)
 
 
+def _record_skip(
+    args: argparse.Namespace,
+    context: RunContext,
+    metric: str,
+    corpus_name: str,
+    reason: str,
+) -> int:
+    """Report a skipped metric and, when recording, store it.
+
+    A skip is stored rather than omitted: a metric that stops running leaves a
+    gap in the series that reads as "nothing changed", which is how a broken
+    backend survives a fortnight unnoticed.
+
+    Args:
+        args: Parsed arguments, for ``record`` and ``results_dir``.
+        context: The invocation's shared facts.
+        metric: The metric that could not run.
+        corpus_name: The corpus it would have used.
+        reason: Why it could not run.
+
+    Returns:
+        int: 0 — a skip is not a failure of the run.
+    """
+    print(f"skipped: {reason}", file=sys.stderr)
+    if args.record:
+        store.append(
+            [skipped_record(context, metric, reason, corpus_name)], args.results_dir
+        )
+    return 0
+
+
 def _cmd_tool_retrieval(args: argparse.Namespace) -> int:
     """Run the tool-retrieval metric.
 
@@ -82,13 +113,7 @@ def _cmd_tool_retrieval(args: argparse.Namespace) -> int:
     try:
         retriever = production.retriever(args.retriever)
     except MetricSkipped as exc:
-        print(f"skipped: {exc.reason}", file=sys.stderr)
-        if args.record:
-            store.append(
-                [skipped_record(context, tr.METRIC_NAME, exc.reason, corpus.name)],
-                args.results_dir,
-            )
-        return 0
+        return _record_skip(args, context, tr.METRIC_NAME, corpus.name, exc.reason)
 
     catalogue = production.collect_catalogue(args.namespace)
     fingerprint = production.catalogue_fingerprint(catalogue)
@@ -106,13 +131,7 @@ def _cmd_tool_retrieval(args: argparse.Namespace) -> int:
     except MetricSkipped as exc:
         # The encoder resolves on first use, not at construction, so a missing
         # model can surface here rather than above.
-        print(f"skipped: {exc.reason}", file=sys.stderr)
-        if args.record:
-            store.append(
-                [skipped_record(context, tr.METRIC_NAME, exc.reason, corpus.name)],
-                args.results_dir,
-            )
-        return 0
+        return _record_skip(args, context, tr.METRIC_NAME, corpus.name, exc.reason)
 
     config = {
         "namespace": args.namespace,
@@ -162,11 +181,12 @@ def _cmd_tool_retrieval(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_check_contract(args: argparse.Namespace) -> int:
+def _cmd_check_contract(args: argparse.Namespace) -> int:  # pylint: disable=unused-argument
     """Resolve every declared production entry point.
 
     Args:
-        args: Parsed arguments.
+        args: Parsed arguments. Unused — the check takes no options, but the
+            signature is fixed by the subcommand dispatch table.
 
     Returns:
         int: 0 when the contract holds, 1 when a required entry point has

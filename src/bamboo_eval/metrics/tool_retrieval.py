@@ -97,7 +97,7 @@ class NullRetriever:
 
     name = "null"
 
-    def retrieve(
+    def retrieve(  # pylint: disable=unused-argument
         self,
         question: str,
         catalog: Sequence[Mapping[str, Any]],

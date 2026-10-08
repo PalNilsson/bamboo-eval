@@ -19,6 +19,14 @@ numbers for it.
 """
 from __future__ import annotations
 
+# pylint: disable=redefined-outer-name
+# A test that consumes a fixture takes it as a parameter of the same name,
+# which shadows the fixture function. That is how pytest works, not a defect.
+#
+# The unreachable `raise` after each pytest.skip() is deliberate: see the note
+# at the top of conftest.py. It keeps this file analysable by a pyright that
+# cannot resolve pytest, which is the state the pre-commit hook runs in.
+
 import json
 from pathlib import Path
 from typing import Any
@@ -74,7 +82,8 @@ def expected_block(
             f"({len(catalogue)} tools); recorded fingerprints are {known}. "
             f"See 'how_to_add_a_fingerprint' in {REFERENCE_PATH.name}."
         )
-    return block
+        raise AssertionError("unreachable: pytest.skip raises")
+    return dict(block)
 
 
 class TestParityWithThePreMoveHarness:
@@ -118,6 +127,7 @@ class TestParityWithThePreMoveHarness:
                 retriever = production.retriever(expected["retriever"])
             except MetricSkipped as exc:
                 pytest.skip(f"{expected['retriever']} unavailable: {exc}")
+                raise
             report = evaluate(
                 retriever,
                 corpus,

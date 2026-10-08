@@ -5,6 +5,11 @@ that are not comparable.  Most of what is tested here is that refusal.
 """
 from __future__ import annotations
 
+# pylint: disable=use-implicit-booleaness-not-comparison
+# `== []` rather than `not ...` is deliberate here: these assertions are about
+# a function returning an empty *list*, and the explicit comparison fails
+# loudly if it ever starts returning None or a generator.
+
 from pathlib import Path
 
 import pytest
@@ -111,25 +116,25 @@ class TestStore:
         store.append([_record(), _record(slice="hard", value=0.983)], tmp_path)
         assert len(store.history("tool_retrieval_recall", "hard", tmp_path)) == 1
 
-    def test_a_different_catalogue_is_not_comparable(self, tmp_path: Path) -> None:
+    def test_a_different_catalogue_is_not_comparable(self) -> None:
         """The headline case: 0.983 and 0.992 were two catalogues, not noise."""
         old = _record(catalogue_fingerprint="251039736f13", value=0.983)
         new = _record(run_id="run-2", catalogue_fingerprint="8f67488c6d95", value=0.992)
         assert list(store.comparable([old], new)) == []
 
-    def test_a_different_corpus_is_not_comparable(self, tmp_path: Path) -> None:
+    def test_a_different_corpus_is_not_comparable(self) -> None:
         """Relabelling the corpus changes what the number means."""
         old = _record(corpus_sha256="d" * 64)
         new = _record(run_id="run-2")
         assert list(store.comparable([old], new)) == []
 
-    def test_a_different_config_is_not_comparable(self, tmp_path: Path) -> None:
+    def test_a_different_config_is_not_comparable(self) -> None:
         """k=10 and k=12 are different measurements wearing one metric name."""
         old = _record(config=canonical_config({"k": 10}))
         new = _record(run_id="run-2", config=canonical_config({"k": 12}))
         assert list(store.comparable([old], new)) == []
 
-    def test_skipped_rows_are_never_compared_against(self, tmp_path: Path) -> None:
+    def test_skipped_rows_are_never_compared_against(self) -> None:
         """A skip is not a worse score."""
         skipped = _record(status="skipped", value=None, skip_reason="no model")
         assert list(store.comparable([skipped], _record(run_id="run-2"))) == []
