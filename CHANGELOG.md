@@ -50,10 +50,28 @@ semantic versioning.
   correctly and stores something indistinguishable from a perfect score until
   someone reads `n_cases`. A `--limit` run that excludes every hard case now
   emits no hard row at all, and the report prints "— (no hard cases)".
-- 82 new tests (152 in total), all offline. A stub planner drives every
+- 89 new tests (159 in total), all offline. A stub planner drives every
   outcome, the whole resolution table, resume, both budget guards and the
   consecutive-error guard; a stand-in module exercises the planner wrapper on a
   bare checkout.
+
+### Fixed — found by the first run on aipanda033
+
+- The planner's LLM selector is populated by the server's own startup, so
+  calling `bamboo_plan_tool` from a bare process raised `RuntimeError: LLM
+  selector is not initialized` on every case. `production.ensure_runtime()`
+  now starts the runtime once per process, *inside* the environment overrides
+  so the selector resolves under the configuration being measured, with
+  `--runtime-init module:function` when the initialiser is not where this
+  package looks. An absent initialiser is a stated skip, not a contract breach.
+- `BAMBOO_TOOL_RETRIEVAL` takes `off | lexical | embedding | hybrid`, not a
+  boolean. `0` warns, falls back to `lexical`, and would have left a row
+  claiming a baseline it did not run — the exact class of defect this framework
+  exists to catch, found by reading a warning line. The value is now checked
+  before the run starts, and the message says what would have happened.
+- One `--model` per invocation, refused rather than silently mismeasured: the
+  selector is process-global, so the second model would have been measured
+  under the first one's selection.
 
 ### Changed — phase 1
 

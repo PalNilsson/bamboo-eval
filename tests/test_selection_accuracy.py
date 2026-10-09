@@ -664,14 +664,23 @@ class TestEnvironmentSelection:
                 "--model",
                 "gpt-oss-20b",
                 "--set-env",
-                "BAMBOO_TOOL_RETRIEVAL=0",
+                "BAMBOO_TOOL_RETRIEVAL=off",
             ]
         )
         assert status == 0
         row = store.read(sa.METRIC_NAME, tmp_path)[0]
         assert row.planner_model == "gpt-oss-20b"
-        assert '"BAMBOO_TOOL_RETRIEVAL":"0"' in row.config
+        assert '"BAMBOO_TOOL_RETRIEVAL":"off"' in row.config
         assert '"LLM_DEFAULT_MODEL":"gpt-oss-20b"' in row.config
+
+    def test_one_model_per_invocation(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """The LLM selector is a process-global populated at server startup, so
+        a second model in the same process answers under the first one's
+        selection while the rows name the second."""
+        assert main(
+            ["selection-accuracy", "--model", "a", "--model", "b"]
+        ) == 1
+        assert "one --model per invocation" in capsys.readouterr().err
 
     def test_the_environment_is_restored_afterwards(
         self, monkeypatch: pytest.MonkeyPatch
