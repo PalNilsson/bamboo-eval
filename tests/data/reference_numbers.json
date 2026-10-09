@@ -73,7 +73,6 @@
     },
     "8f67488c6d95": {
       "source": "bamboo-mcp scripts/eval_tool_retrieval.py on aipanda033, 2026-10-08",
-      "note": "PARTIAL. Only the null baseline was recorded, from a default run of the old harness; the lexical sweep at k=6/8/10/12/14 is missing. Until it is added, parity on this catalogue checks the payload denominator, the case count and the baseline only. The lexical rows are the ones that would catch a change in the retriever, so add them before this fingerprint is treated as a reproduction. See how_to_add_a_fingerprint above; the old harness must be run before it is deleted from bamboo-mcp.",
       "cases": 120,
       "full_payload_chars": 30065,
       "reports": [
@@ -85,6 +84,51 @@
           "guidance_coverage": 1.0,
           "payload_fraction": 1.0,
           "over_budget_cases": 120
+        },
+        {
+          "retriever": "lexical",
+          "k": 6,
+          "recall_at_k": 0.9167,
+          "recall_at_k_hard": 0.9322,
+          "guidance_coverage": 0.8824,
+          "payload_fraction": 0.2449,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 8,
+          "recall_at_k": 0.9667,
+          "recall_at_k_hard": 0.9492,
+          "guidance_coverage": 0.9608,
+          "payload_fraction": 0.3217,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 10,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 1.0,
+          "payload_fraction": 0.4049,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 12,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 1.0,
+          "payload_fraction": 0.4849,
+          "over_budget_cases": 0
+        },
+        {
+          "retriever": "lexical",
+          "k": 14,
+          "recall_at_k": 1.0,
+          "recall_at_k_hard": 1.0,
+          "guidance_coverage": 1.0,
+          "payload_fraction": 0.5508,
+          "over_budget_cases": 0
         }
       ]
     }

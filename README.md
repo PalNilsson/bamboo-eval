@@ -81,7 +81,7 @@ bamboo-eval selection-accuracy --model gpt-oss-20b --resume     # after a drop
 bamboo-eval history selection_accuracy --slice hard
 ```
 
-The baseline is the same run with `BAMBOO_TOOL_RETRIEVAL=0` — the planner shown
+The baseline is the same run with `BAMBOO_TOOL_RETRIEVAL=off` — the planner shown
 the whole catalogue, the direct analogue of `NullRetriever`, and the thing a
 narrowed run must not be worse than (decision E-26). `BAMBOO_FAST_PATH` is
 deliberately neither set nor recorded: the planner never reads it, and calling
@@ -92,11 +92,18 @@ model, which is the profile the planner resolves through —
 `scripts/probe_llm.py` in bamboo-mcp prints the resolved profiles and is how to
 confirm it. Anything that lever does not cover goes through `--set-env
 NAME=VALUE`: the provider variable when the model is on another provider
-(`claude-haiku-4-5` as the commercial reference point), `BAMBOO_TOOL_RETRIEVAL=0`
+(`claude-haiku-4-5` as the commercial reference point), `BAMBOO_TOOL_RETRIEVAL=off`
 for the baseline, `BAMBOO_MODEL_PRICES` so `cost_guard` prices the CERN models
 rather than only counting their tokens. Every variable applied is recorded in
 the row's `config`; omit `--model` to measure whatever the deployment selects,
 which is recorded as such rather than guessed at.
+
+One `--model` per invocation. Bamboo's LLM selector is a process-global
+populated from the environment when the server runtime starts, so a second
+model measured in the same process would answer under the first one's
+selection while the rows named the second. The runtime is started once, inside
+the overrides, and `--runtime-init module:function` names its initialiser if it
+is not where this package expects.
 
 Every call is appended to `results/ledger/selection_accuracy-<fingerprint>.jsonl`
 as it returns, which is what `--resume` reads. **Add `results/ledger/` to

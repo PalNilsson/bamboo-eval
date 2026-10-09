@@ -518,6 +518,7 @@ def plan(
     temperature: float = 0.0,
     max_tokens: int = 900,
     plugin_id: str | None = None,
+    runtime_init: str = "",
 ) -> dict[str, Any]:
     """Ask the production planner for a plan, without executing it.
 
@@ -537,6 +538,8 @@ def plan(
         temperature: Sampling temperature; 0 where the gateway honours it.
         max_tokens: Generation limit, the tool's own default.
         plugin_id: Active plugin, or ``None`` for the server's default.
+        runtime_init: ``module:function`` initialising the server runtime, or
+            empty to find it.  See :func:`ensure_runtime`.
 
     Returns:
         Dict[str, Any]: The parsed plan.
@@ -549,6 +552,7 @@ def plan(
         BambooEvalError: If called from inside a running event loop, which this
             wrapper cannot drive a coroutine from.
     """
+    ensure_runtime(runtime_init)
     tool = resolve(_entry("bamboo_plan_tool"))
     call = getattr(tool, "call", None)
     if not inspect.iscoroutinefunction(call):
@@ -576,3 +580,116 @@ def plan(
             "loop; drive the planner's coroutine directly in that case"
         )
     return parse_plan(_first_text_block(asyncio.run(call(arguments))))
+
+
+#: Values ``BAMBOO_TOOL_RETRIEVAL`` accepts.  An unrecognised value does not
+#: fail there — it warns and falls back to ``lexical`` — so a run asking for a
+#: baseline with ``0`` measures the narrowed catalogue and records ``0`` in its
+#: configuration.  That is a row that lies about what it measured, which is
+#: why :func:`check_retrieval_setting` refuses the value here instead.
+RETRIEVAL_BACKENDS: tuple[str, ...] = ("off", "lexical", "embedding", "hybrid")
+
+#: Where the server runtime's initialiser might live.  The planner resolves its
+#: model through an LLM selector that ``create_server()`` populates; calling the
+#: planner without it raises ``RuntimeError: LLM selector is not initialized``.
+#: Tried in order, and overridable with ``--runtime-init module:function``, so
+#: a move does not need a release of this package.
+RUNTIME_INIT_CANDIDATES: tuple[str, ...] = (
+    "bamboo.core:create_server",
+    "bamboo:create_server",
+    "bamboo.server:create_server",
+    "bamboo.core.server:create_server",
+)
+
+#: Process state for :func:`ensure_runtime`.  ``server`` holds the returned
+#: object so it is not garbage-collected under the selector it populated.
+_RUNTIME: dict[str, Any] = {"spec": "", "environment": None, "server": None}
+
+
+def check_retrieval_setting(value: str) -> None:
+    """Reject a ``BAMBOO_TOOL_RETRIEVAL`` value Bamboo would silently replace.
+
+    Args:
+        value: The value a run is about to set.
+
+    Raises:
+        BambooEvalError: If it is not one of :data:`RETRIEVAL_BACKENDS`.  The
+            baseline is ``off``, not ``0``: ``0`` warns, falls back to
+            ``lexical``, and leaves a row claiming a baseline it did not run.
+    """
+    if value not in RETRIEVAL_BACKENDS:
+        raise BambooEvalError(
+            f"BAMBOO_TOOL_RETRIEVAL={value!r} is not a backend; Bamboo would warn "
+            f"and fall back to 'lexical', so the run would measure retrieval while "
+            f"the row said {value!r}. Expected one of {list(RETRIEVAL_BACKENDS)} — "
+            f"the baseline is 'off'."
+        )
+
+
+def ensure_runtime(spec: str = "") -> str:
+    """Initialise the server runtime the planner needs, once per process.
+
+    ``bamboo_plan_tool`` resolves its model through an LLM selector that the
+    server's own startup populates.  Called without it, the planner raises
+    ``RuntimeError: LLM selector is not initialized`` on every case — which the
+    consecutive-error guard turns into a stopped run rather than a 0.000, but
+    stopping is not the same as working.
+
+    The selector is process-global and is populated from the environment as it
+    stands at initialisation, so this is called *inside* the environment
+    overrides a run applies, and a second initialisation under a different
+    environment is refused rather than attempted: the planner would otherwise
+    answer under the first model's selection while the rows named the second.
+
+    Args:
+        spec: ``module:function`` to call, or empty to try
+            :data:`RUNTIME_INIT_CANDIDATES` in order.
+
+    Returns:
+        str: The spec that was used, or the one already in force.
+
+    Raises:
+        MetricSkipped: If no initialiser can be found.  Not a contract breach:
+            a checkout without a usable runtime cannot be measured, and saying
+            so is constraint 4.3.
+        ProductionContractError: If the named initialiser cannot be called, or
+            if the environment has changed since the runtime started.
+    """
+    environment = tuple(sorted(retrieval_settings().items())) + (
+        (MODEL_ENV_VAR, os.environ.get(MODEL_ENV_VAR)),
+    )
+    if _RUNTIME["server"] is not None:
+        if _RUNTIME["environment"] != environment:
+            raise ProductionContractError(
+                "the server runtime was started under a different environment and "
+                "the LLM selector it populated is process-global; measuring a "
+                "second configuration here would answer under the first one. Run "
+                "one configuration per invocation."
+            )
+        return str(_RUNTIME["spec"])
+
+    candidates = (spec,) if spec else RUNTIME_INIT_CANDIDATES
+    for candidate in candidates:
+        module_name, _, attribute = candidate.partition(":")
+        try:
+            initialiser = getattr(importlib.import_module(module_name), attribute)
+        except (ImportError, AttributeError, ValueError):
+            continue
+        try:
+            server = initialiser()
+            if inspect.isawaitable(server):
+                server = asyncio.run(server)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise ProductionContractError(
+                f"{candidate} could not be called with no arguments ({exc}); pass "
+                f"the right initialiser with --runtime-init module:function"
+            ) from exc
+        _RUNTIME.update(spec=candidate, environment=environment, server=server)
+        return candidate
+
+    raise MetricSkipped(
+        f"no server runtime initialiser found (tried {list(candidates)}); the "
+        f"planner's LLM selector is populated by the server's startup, so the "
+        f"metric cannot run without it. Name it with --runtime-init "
+        f"module:function."
+    )

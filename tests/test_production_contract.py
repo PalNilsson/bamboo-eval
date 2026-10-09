@@ -12,6 +12,10 @@ reaching for an undeclared symbol is a defect whether or not Bamboo is present.
 from __future__ import annotations
 
 # pylint: disable=protected-access,too-few-public-methods,unused-argument
+# pylint: disable=redefined-outer-name
+# A test consuming a fixture takes a parameter of the same name; that is how
+# pytest works, not a defect. The protected access is to production._RUNTIME,
+# whose whole point is that it is process state a test must be able to reset.
 # production._entry is private and is tested directly on purpose: it is the
 # guard against a metric reaching into Bamboo for an undeclared symbol, which
 # is the failure this whole module exists to prevent. The local _Rule stub is
@@ -24,10 +28,17 @@ import os
 import sys
 import types
 
+from typing import Any, Iterator
+
 import pytest
 
 from bamboo_eval import production
-from bamboo_eval.errors import MetricSkipped, PlanParseError, ProductionContractError
+from bamboo_eval.errors import (
+    BambooEvalError,
+    MetricSkipped,
+    PlanParseError,
+    ProductionContractError,
+)
 from bamboo_eval.metrics import selection_accuracy, tool_retrieval
 
 #: Every metric module, with the attribute names it declares.
@@ -143,6 +154,19 @@ class TestAgainstLiveBamboo:
         assert production.guidance_fingerprint(()) == ""
 
 
+@pytest.fixture
+def clean_runtime() -> Iterator[None]:
+    """Reset the process-global runtime state around a test.
+
+    Yields:
+        None: Nothing; the fixture exists for its teardown.
+    """
+    saved = dict(production._RUNTIME)
+    production._RUNTIME.update(spec="", environment=None, server=None)
+    yield
+    production._RUNTIME.update(saved)
+
+
 class TestPlanParsing:
     """What comes back from the planner, and what counts as a plan."""
 
@@ -187,6 +211,7 @@ class TestPlanParsing:
         assert "not json at all" in caught.value.payload
 
 
+@pytest.mark.usefixtures("clean_runtime")
 class TestPlannerWrapper:
     """``plan()`` drives the entry point decision E-25 names.
 
@@ -204,10 +229,16 @@ class TestPlannerWrapper:
             monkeypatch: The fixture that restores ``sys.modules`` afterwards.
             tool: The object to publish as ``bamboo_plan_tool``.
         """
-        for name in ("bamboo", "bamboo.tools", "bamboo.tools.planner"):
+        for name in ("bamboo", "bamboo.tools", "bamboo.tools.planner", "bamboo.core"):
             module = types.ModuleType(name)
             module.__spec__ = importlib.machinery.ModuleSpec(name, None)
             monkeypatch.setitem(sys.modules, name, module)
+        # plan() starts the server runtime first, so the stand-in needs one:
+        # without it the wrapper would skip before reaching what is under test.
+        monkeypatch.setattr(
+            sys.modules["bamboo.core"], "create_server", lambda: "server", raising=False
+        )
+        production._RUNTIME.update(spec="", environment=None, server=None)
         monkeypatch.setattr(
             sys.modules["bamboo.tools.planner"],
             "bamboo_plan_tool",
@@ -333,3 +364,76 @@ class TestModelSelection:
         assert settings["BAMBOO_TOOL_RETRIEVAL"] == "0"
         assert set(settings) == set(production.RETRIEVAL_ENV_VARS)
         assert "BAMBOO_FAST_PATH" not in settings
+
+
+class TestRetrievalSetting:
+    """The value that decides whether a run is the baseline."""
+
+    def test_the_baseline_value_is_off_not_zero(self) -> None:
+        """Found by running it: Bamboo warns on an unrecognised value and falls
+        back to 'lexical', so `0` measures retrieval and records a baseline."""
+        production.check_retrieval_setting("off")
+        production.check_retrieval_setting("hybrid")
+        with pytest.raises(BambooEvalError, match="baseline is 'off'"):
+            production.check_retrieval_setting("0")
+
+    def test_the_message_names_what_would_have_happened(self) -> None:
+        """A rejection that does not say why gets worked around."""
+        with pytest.raises(BambooEvalError, match="fall back to 'lexical'"):
+            production.check_retrieval_setting("1")
+
+
+class TestRuntimeInitialisation:
+    """The planner's LLM selector is populated by the server's startup."""
+
+    @staticmethod
+    def _module(monkeypatch: pytest.MonkeyPatch, name: str, factory: Any) -> None:
+        """Publish a stand-in module exposing ``create_server``.
+
+        Args:
+            monkeypatch: The fixture that restores ``sys.modules``.
+            name: Module name to publish.
+            factory: The callable to expose.
+        """
+        module = types.ModuleType(name)
+        module.__spec__ = importlib.machinery.ModuleSpec(name, None)
+        monkeypatch.setitem(sys.modules, name, module)
+        monkeypatch.setattr(module, "create_server", factory, raising=False)
+
+    def test_the_runtime_starts_once(
+        self, monkeypatch: pytest.MonkeyPatch, clean_runtime: None
+    ) -> None:
+        """Starting it per case would be slow; starting it never is the defect
+        this exists to fix."""
+        calls: list[int] = []
+        self._module(monkeypatch, "fakeruntime", lambda: calls.append(1) or "server")
+        assert production.ensure_runtime("fakeruntime:create_server")
+        assert production.ensure_runtime("fakeruntime:create_server")
+        assert calls == [1]
+
+    def test_a_changed_environment_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, clean_runtime: None
+    ) -> None:
+        """The selector is process-global, so a second configuration here would
+        answer under the first one while the rows named the second."""
+        self._module(monkeypatch, "fakeruntime", lambda: "server")
+        production.ensure_runtime("fakeruntime:create_server")
+        monkeypatch.setenv("BAMBOO_TOOL_RETRIEVAL", "off")
+        with pytest.raises(ProductionContractError, match="process-global"):
+            production.ensure_runtime("fakeruntime:create_server")
+
+    def test_no_initialiser_is_a_skip_with_instructions(
+        self, monkeypatch: pytest.MonkeyPatch, clean_runtime: None
+    ) -> None:
+        """A checkout without a usable runtime cannot be measured, and saying so
+        is constraint 4.3 rather than a contract breach."""
+        with pytest.raises(MetricSkipped, match="--runtime-init"):
+            production.ensure_runtime("nosuchmodule:create_server")
+
+    def test_an_initialiser_needing_arguments_names_the_flag(
+        self, monkeypatch: pytest.MonkeyPatch, clean_runtime: None
+    ) -> None:
+        """Calling the wrong function is a contract problem, not an absence."""
+        self._module(monkeypatch, "fakeruntime", lambda required: "server")
+        with pytest.raises(ProductionContractError, match="--runtime-init"):
+            production.ensure_runtime("fakeruntime:create_server")

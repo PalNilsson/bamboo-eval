@@ -289,6 +289,16 @@ def _env_overrides(args: argparse.Namespace, model: str) -> dict[str, str]:
         if not separator or not name:
             raise BambooEvalError(f"--set-env expects NAME=VALUE, got {item!r}")
         overrides[name] = value
+    if "BAMBOO_TOOL_RETRIEVAL" in overrides:
+        production.check_retrieval_setting(overrides["BAMBOO_TOOL_RETRIEVAL"])
+    if len(args.model or []) > 1:
+        raise BambooEvalError(
+            "pass one --model per invocation. Bamboo's LLM selector is a "
+            "process-global populated from the environment when the server "
+            "runtime starts, so a second model measured in the same process "
+            "would answer under the first one's selection while the rows named "
+            "the second. The ledger and the store make a shell loop cheap."
+        )
     return overrides
 
 
@@ -328,6 +338,7 @@ def _run_one_model(
             namespaces=[args.namespace],
             temperature=args.temperature,
             plugin_id=args.plugin_id,
+            runtime_init=args.runtime_init,
         )
 
     with production.env_overrides(_env_overrides(args, model)):
@@ -375,6 +386,7 @@ def _cmd_selection_accuracy(args: argparse.Namespace) -> int:
         "temperature": args.temperature,
         "limit": args.limit or 0,
         "model_env": args.model_env,
+        "runtime_init": args.runtime_init,
         "env": production.retrieval_settings(),
     }
 
@@ -382,7 +394,7 @@ def _cmd_selection_accuracy(args: argparse.Namespace) -> int:
     print(f"corpus:    {len(corpus.cases)} cases, {corpus.name} v{corpus.version}")
     print(f"           sha256={corpus.sha256[:12]} from {corpus_path}")
     print(f"ledger:    {ledger.ledger_path(sa.METRIC_NAME, fingerprint, args.results_dir)}")
-    print(f"retrieval: {production.retrieval_settings()}")
+    print(f"retrieval: {production.retrieval_settings()}  (before overrides)")
     print()
 
     records = []
@@ -570,6 +582,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Evaluations per case (default: 5, floor of 3 for a usable stddev).",
+    )
+    selection.add_argument(
+        "--runtime-init",
+        default="",
+        metavar="MODULE:FUNCTION",
+        help="Initialiser for the server runtime whose startup populates the "
+        "planner's LLM selector. Found automatically when it is where it is "
+        "expected; recorded in the row either way.",
     )
     selection.add_argument(
         "--set-env",
